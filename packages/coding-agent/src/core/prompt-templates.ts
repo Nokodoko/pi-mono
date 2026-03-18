@@ -1,8 +1,9 @@
 import { existsSync, readdirSync, readFileSync, statSync } from "fs";
 import { homedir } from "os";
-import { basename, isAbsolute, join, resolve, sep } from "path";
+import { basename, isAbsolute, join, relative, resolve, sep } from "path";
 import { CONFIG_DIR_NAME, getPromptsDir } from "../config.js";
 import { parseFrontmatter } from "../utils/frontmatter.js";
+import { buildIgnoreMatcher } from "../utils/ignore.js";
 
 /**
  * Represents a prompt template loaded from a markdown file
@@ -134,6 +135,7 @@ function loadTemplateFromFile(filePath: string, source: string, sourceLabel: str
 
 /**
  * Scan a directory for .md files (non-recursive) and load them as prompt templates.
+ * Respects .ignore, .gitignore, and .fdignore files in the directory.
  */
 function loadTemplatesFromDir(dir: string, source: string, sourceLabel: string): PromptTemplate[] {
 	const templates: PromptTemplate[] = [];
@@ -142,11 +144,17 @@ function loadTemplatesFromDir(dir: string, source: string, sourceLabel: string):
 		return templates;
 	}
 
+	const ig = buildIgnoreMatcher(dir);
+
 	try {
 		const entries = readdirSync(dir, { withFileTypes: true });
 
 		for (const entry of entries) {
 			const fullPath = join(dir, entry.name);
+
+			if (ig.ignores(relative(dir, fullPath))) {
+				continue;
+			}
 
 			// For symlinks, check if they point to a file
 			let isFile = entry.isFile();
