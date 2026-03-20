@@ -28,6 +28,9 @@ export interface LoadSkillsResult {
 	diagnostics: ResourceDiagnostic[];
 }
 
+const MAX_NAME_LENGTH = 64;
+const MAX_DESCRIPTION_LENGTH = 256;
+
 /**
  * Validate skill name per Agent Skills spec.
  * Returns array of validation error messages (empty if valid).
