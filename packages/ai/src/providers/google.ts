@@ -327,6 +327,7 @@ function createClient(
 
 	return new GoogleGenAI({
 		apiKey,
+		vertexai: false,
 		httpOptions: Object.keys(httpOptions).length > 0 ? httpOptions : undefined,
 	});
 }
