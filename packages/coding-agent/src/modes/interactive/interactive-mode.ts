@@ -47,7 +47,10 @@ import {
 	VERSION,
 } from "../../config.js";
 import { type AgentSession, type AgentSessionEvent, parseSkillBlock } from "../../core/agent-session.js";
+import type { BackgroundAgentResult } from "../../core/background-agent.js";
+import { BackgroundAgentManager } from "../../core/background-agent-manager.js";
 import type { CompactionResult } from "../../core/compaction/index.js";
+import { createEventBus } from "../../core/event-bus.js";
 import type {
 	ExtensionContext,
 	ExtensionRunner,
@@ -70,6 +73,8 @@ import { extensionForImageMimeType, readClipboardImage } from "../../utils/clipb
 import { ensureTool } from "../../utils/tools-manager.js";
 import { ArminComponent } from "./components/armin.js";
 import { AssistantMessageComponent } from "./components/assistant-message.js";
+import { BackgroundAgentPanel, type BackgroundAgentPanelCallbacks } from "./components/background-agent-panel.js";
+import { BackgroundStatusBar } from "./components/background-status-bar.js";
 import { BashExecutionComponent } from "./components/bash-execution.js";
 import { BorderedLoader } from "./components/bordered-loader.js";
 import { BranchSummaryMessageComponent } from "./components/branch-summary-message.js";
@@ -109,6 +114,17 @@ import {
 	type ThemeColor,
 	theme,
 } from "./theme/theme.js";
+
+function formatBackgroundDuration(ms: number): string {
+	const seconds = Math.floor(ms / 1000);
+	if (seconds < 60) return `${seconds}s`;
+	const minutes = Math.floor(seconds / 60);
+	const remainingSeconds = seconds % 60;
+	if (minutes < 60) return `${minutes}m ${remainingSeconds}s`;
+	const hours = Math.floor(minutes / 60);
+	const remainingMinutes = minutes % 60;
+	return `${hours}h ${remainingMinutes}m`;
+}
 
 /** Interface for components that can be expanded/collapsed */
 interface Expandable {
@@ -238,6 +254,12 @@ export class InteractiveMode {
 	// Custom header from extension (undefined = use built-in header)
 	private customHeader: (Component & { dispose?(): void }) | undefined = undefined;
 
+	// Background agent support
+	private backgroundManager: BackgroundAgentManager;
+	private backgroundStatusBar: BackgroundStatusBar;
+	private backgroundPanelOverlay: OverlayHandle | undefined = undefined;
+	private backgroundCompletionUnsubscribe?: () => void;
+
 	// Convenience accessors
 	private get agent() {
 		return this.session.agent;
@@ -265,6 +287,13 @@ export class InteractiveMode {
 		this.widgetContainerBelow = new Container();
 		this.keybindings = KeybindingsManager.create();
 		setKeybindings(this.keybindings);
+
+		// Background agent support
+		const eventBus = createEventBus();
+		this.backgroundManager = new BackgroundAgentManager(eventBus);
+		this.backgroundStatusBar = new BackgroundStatusBar(this.backgroundManager, () => {
+			this.showBackgroundPanel();
+		});
 		const editorPaddingX = this.settingsManager.getEditorPaddingX();
 		const autocompleteMaxVisible = this.settingsManager.getAutocompleteMaxVisible();
 		this.defaultEditor = new CustomEditor(this.ui, getEditorTheme(), this.keybindings, {
@@ -390,6 +419,7 @@ export class InteractiveMode {
 				rawKeyHint(`${keyText("app.clear")} twice`, "to exit"),
 				hint("app.exit", "to exit (empty)"),
 				hint("app.suspend", "to suspend"),
+				hint("app.background", "to background agent"),
 				keyHint("tui.editor.deleteToLineEnd", "to delete to end"),
 				hint("app.thinking.cycle", "to cycle thinking level"),
 				rawKeyHint(`${keyText("app.model.cycleForward")}/${keyText("app.model.cycleBackward")}`, "to cycle models"),
@@ -448,6 +478,7 @@ export class InteractiveMode {
 		this.ui.addChild(this.pendingMessagesContainer);
 		this.ui.addChild(this.statusContainer);
 		this.renderWidgets(); // Initialize with default spacer
+		this.ui.addChild(this.backgroundStatusBar);
 		this.ui.addChild(this.widgetContainerAbove);
 		this.ui.addChild(this.editorContainer);
 		this.ui.addChild(this.widgetContainerBelow);
@@ -456,6 +487,7 @@ export class InteractiveMode {
 
 		this.setupKeyHandlers();
 		this.setupEditorSubmitHandler();
+		this.setupBackgroundCompletionListener();
 
 		// Start the UI before initializing extensions so session_start handlers can use interactive dialogs
 		this.ui.start();
@@ -1913,6 +1945,7 @@ export class InteractiveMode {
 		this.defaultEditor.onAction("app.session.tree", () => this.showTreeSelector());
 		this.defaultEditor.onAction("app.session.fork", () => this.showUserMessageSelector());
 		this.defaultEditor.onAction("app.session.resume", () => this.showSessionSelector());
+		this.defaultEditor.onAction("app.background", () => this.handleBackground());
 
 		this.defaultEditor.onChange = (text: string) => {
 			const wasBashMode = this.isBashMode;
@@ -2056,6 +2089,15 @@ export class InteractiveMode {
 			if (text === "/arminsayshi") {
 				this.handleArminSaysHi();
 				this.editor.setText("");
+				return;
+			}
+			if (text === "/background") {
+				this.editor.setText("");
+				if (this.backgroundManager.getTotalCount() > 0) {
+					this.showBackgroundPanel();
+				} else {
+					this.showStatus("No background agents. Press Ctrl+B while an agent is running to background it.");
+				}
 				return;
 			}
 			if (text === "/resume") {
@@ -2669,6 +2711,37 @@ export class InteractiveMode {
 
 	private async shutdown(): Promise<void> {
 		if (this.isShuttingDown) return;
+
+		// Check for active background agents
+		const runningCount = this.backgroundManager.getRunningCount();
+		if (runningCount > 0) {
+			const label = runningCount === 1 ? "agent" : "agents";
+			const confirmed = await new Promise<boolean>((resolve) => {
+				const lines = [
+					theme.fg("warning", `${runningCount} background ${label} still running.`),
+					"",
+					`${theme.fg("accent", "[Enter]")} Exit anyway  ${theme.fg("dim", "[Esc]")} Cancel`,
+				];
+				const handle = this.ui.showOverlay({
+					render: (_width: number) => lines,
+					invalidate: () => {},
+					handleInput: (data: string) => {
+						if (matchesKey(data, "return")) {
+							handle.hide();
+							resolve(true);
+						} else if (matchesKey(data, "escape")) {
+							handle.hide();
+							resolve(false);
+						}
+					},
+				});
+			});
+			if (!confirmed) {
+				return;
+			}
+			this.backgroundManager.abortAll();
+		}
+
 		this.isShuttingDown = true;
 
 		// Emit shutdown event to extensions
@@ -2686,6 +2759,10 @@ export class InteractiveMode {
 		// Drain any in-flight Kitty key release events before stopping.
 		// This prevents escape sequences from leaking to the parent shell over slow SSH.
 		await this.ui.terminal.drainInput(1000);
+
+		// Clean up background agent resources
+		this.backgroundCompletionUnsubscribe?.();
+		this.backgroundManager.dispose();
 
 		this.stop();
 		process.exit(0);
@@ -2717,6 +2794,147 @@ export class InteractiveMode {
 
 		// Send SIGTSTP to process group (pid=0 means all processes in group)
 		process.kill(0, "SIGTSTP");
+	}
+
+	// =========================================================================
+	// Background Agent Support
+	// =========================================================================
+
+	/**
+	 * Handle Ctrl+B: background the current agent or show the management panel.
+	 * If the agent is streaming, offer to background it.
+	 * If no agent is streaming, show the background agent management panel
+	 * (if there are background agents) or do nothing.
+	 */
+	private handleBackground(): void {
+		if (this.session.isStreaming) {
+			// Agent is running — offer to background it
+			void this.backgroundCurrentAgent();
+		} else if (this.backgroundManager.getTotalCount() > 0) {
+			// No agent running, but there are background agents — show panel
+			this.showBackgroundPanel();
+		}
+	}
+
+	/**
+	 * Background the currently running agent.
+	 * Shows a confirmation overlay, then aborts the current
+	 * agent run and replays it in a background agent.
+	 */
+	private async backgroundCurrentAgent(): Promise<void> {
+		// Show confirmation overlay
+		const confirmed = await new Promise<boolean>((resolve) => {
+			const lines = [
+				theme.bold("Background this agent?"),
+				"",
+				theme.fg("dim", `Active tools: ${this.session.getActiveToolNames().join(", ")}`),
+				theme.fg("dim", "The agent will continue autonomously with these permissions."),
+				"",
+				`${theme.fg("accent", "[Enter]")} to confirm  ${theme.fg("dim", "[Esc]")} to cancel`,
+			];
+			const handle = this.ui.showOverlay({
+				render: (_width: number) => lines,
+				invalidate: () => {},
+				handleInput: (data: string) => {
+					if (matchesKey(data, "return")) {
+						handle.hide();
+						resolve(true);
+					} else if (matchesKey(data, "escape")) {
+						handle.hide();
+						resolve(false);
+					}
+				},
+			});
+		});
+
+		if (!confirmed) return;
+
+		// Get the last user message text as the label
+		let lastUserText = "Background task";
+		const messages = this.session.state.messages;
+		for (let i = messages.length - 1; i >= 0; i--) {
+			const msg = messages[i];
+			if (msg?.role === "user" && typeof msg.content === "string") {
+				lastUserText = msg.content;
+				break;
+			}
+		}
+
+		// Truncate label for display
+		const label = lastUserText.length > 60 ? `${lastUserText.slice(0, 57)}...` : lastUserText;
+
+		// Abort the current agent
+		this.session.agent.abort();
+
+		// Clone the session for background execution
+		const clonedSession = this.session.cloneForBackground();
+
+		// Start the background agent
+		try {
+			const bgId = await this.backgroundManager.backgroundAgent(clonedSession, lastUserText, label);
+			this.showStatus(`Agent backgrounded (${bgId}): "${label}". Press Ctrl+B to manage.`);
+		} catch (err) {
+			this.showStatus(`Failed to background agent: ${err instanceof Error ? err.message : String(err)}`);
+		}
+
+		this.ui.requestRender();
+	}
+
+	/**
+	 * Show the background agent management panel as an overlay.
+	 */
+	private showBackgroundPanel(): void {
+		if (this.backgroundPanelOverlay) return; // Already showing
+
+		const callbacks: BackgroundAgentPanelCallbacks = {
+			onClose: () => {
+				this.backgroundPanelOverlay?.hide();
+				this.backgroundPanelOverlay = undefined;
+			},
+			onViewResults: (result: BackgroundAgentResult) => {
+				this.showBackgroundResults(result);
+			},
+			onInsertResults: (result: BackgroundAgentResult) => {
+				this.insertBackgroundResults(result);
+			},
+		};
+
+		const panel = new BackgroundAgentPanel(this.backgroundManager, callbacks);
+		this.backgroundPanelOverlay = this.ui.showOverlay(panel, { anchor: "center" });
+	}
+
+	/**
+	 * Show background agent results as a status message.
+	 */
+	private showBackgroundResults(result: BackgroundAgentResult): void {
+		const durationStr = formatBackgroundDuration(result.duration);
+		const status = result.success ? "completed" : "failed";
+		this.showStatus(`Background agent "${result.label}" ${status} in ${durationStr}`);
+		this.backgroundManager.dismiss(result.id);
+	}
+
+	/**
+	 * Insert background agent results as a summary status message in the chat.
+	 */
+	private insertBackgroundResults(result: BackgroundAgentResult): void {
+		const durationStr = formatBackgroundDuration(result.duration);
+		const status = result.success ? "completed" : "failed";
+		this.showStatus(
+			`[Background] "${result.label}" ${status} (${durationStr}, ${result.toolCallCount} tool calls, ${result.turnCount} turns)`,
+		);
+		this.backgroundManager.dismiss(result.id);
+	}
+
+	/**
+	 * Set up background agent completion listener.
+	 */
+	private setupBackgroundCompletionListener(): void {
+		this.backgroundCompletionUnsubscribe = this.backgroundManager.onCompletion((result) => {
+			const durationStr = formatBackgroundDuration(result.duration);
+			const status = result.success ? "completed" : "failed";
+			this.showStatus(`Background agent "${result.label}" ${status} (${durationStr}). Press Ctrl+B to manage.`);
+			this.ui.requestRender();
+		});
 	}
 
 	private async handleFollowUp(): Promise<void> {

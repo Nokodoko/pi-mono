@@ -15,13 +15,13 @@
 
 import { copyFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { basename, dirname, join, resolve } from "node:path";
-import type {
+import {
 	Agent,
-	AgentEvent,
-	AgentMessage,
-	AgentState,
-	AgentTool,
-	ThinkingLevel,
+	type AgentEvent,
+	type AgentMessage,
+	type AgentState,
+	type AgentTool,
+	type ThinkingLevel,
 } from "@mariozechner/pi-agent-core";
 import type { AssistantMessage, ImageContent, Message, Model, TextContent } from "@mariozechner/pi-ai";
 import { isContextOverflow, modelsAreEqual, resetApiProviders, supportsXhigh } from "@mariozechner/pi-ai";
@@ -700,6 +700,53 @@ export class AgentSession {
 	 */
 	getActiveToolNames(): string[] {
 		return this.agent.state.tools.map((t) => t.name);
+	}
+
+	/**
+	 * Create a lightweight clone of this session for background execution.
+	 *
+	 * The cloned session gets a new Agent instance with a deep copy of the
+	 * current message history, model, tools, and system prompt. Service
+	 * dependencies (sessionManager, settingsManager, resourceLoader,
+	 * modelRegistry) are shared by reference since the background agent
+	 * only reads from them.
+	 *
+	 * The clone does NOT carry over extensions, pending steering/follow-up
+	 * messages, or compaction state — background agents run headlessly with
+	 * the tool set that was active at the moment of cloning.
+	 */
+	cloneForBackground(): AgentSession {
+		const currentState = this.agent.state;
+
+		// Create a new Agent with a snapshot of the current state.
+		// Deep-copy messages so the background agent has its own history.
+		const clonedAgent = new Agent({
+			initialState: {
+				systemPrompt: currentState.systemPrompt,
+				model: currentState.model,
+				thinkingLevel: currentState.thinkingLevel,
+				// Tools are objects with execute functions — safe to share by ref
+				tools: [...currentState.tools],
+				// Deep copy messages so background and foreground don't interfere
+				messages: structuredClone(currentState.messages),
+			},
+			// Share the stream function and API key resolver
+			streamFn: this.agent.streamFn,
+			getApiKey: this.agent.getApiKey,
+			transport: this.agent.transport,
+			thinkingBudgets: this.agent.thinkingBudgets,
+		});
+
+		return new AgentSession({
+			agent: clonedAgent,
+			sessionManager: this.sessionManager,
+			settingsManager: this.settingsManager,
+			cwd: this._cwd,
+			resourceLoader: this._resourceLoader,
+			modelRegistry: this._modelRegistry,
+			// Use the already-active tool names so _buildRuntime preserves them
+			initialActiveToolNames: this.getActiveToolNames(),
+		});
 	}
 
 	/**
