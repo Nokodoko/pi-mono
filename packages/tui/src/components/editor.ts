@@ -267,6 +267,14 @@ export class Editor implements Component, Focusable {
 	// Undo support
 	private undoStack = new UndoStack<EditorState>();
 
+	// Badge (displayed on bottom-right of border)
+	private badgeText: string | undefined = undefined;
+	private badgeColorFn: ((str: string) => string) | undefined = undefined;
+
+	// Top label (displayed on left side of top border, e.g. session name)
+	private topLabelText: string | undefined = undefined;
+	private topLabelColorFn: ((str: string) => string) | undefined = undefined;
+
 	public onSubmit?: (text: string) => void;
 	public onChange?: (text: string) => void;
 	public disableSubmit: boolean = false;
@@ -301,6 +309,30 @@ export class Editor implements Component, Focusable {
 			this.paddingX = newPadding;
 			this.tui.requestRender();
 		}
+	}
+
+	/** Set a badge label displayed on the bottom-right of the editor border */
+	setBadge(text: string | undefined, colorFn?: (str: string) => string): void {
+		this.badgeText = text;
+		this.badgeColorFn = colorFn;
+	}
+
+	/** Get the current badge text and color function */
+	getBadge(): { text: string; colorFn?: (str: string) => string } | undefined {
+		if (!this.badgeText) return undefined;
+		return { text: this.badgeText, colorFn: this.badgeColorFn };
+	}
+
+	/** Set a label displayed on the left side of the top editor border */
+	setTopLabel(text: string | undefined, colorFn?: (str: string) => string): void {
+		this.topLabelText = text;
+		this.topLabelColorFn = colorFn;
+	}
+
+	/** Get the current top label text and color function */
+	getTopLabel(): { text: string; colorFn?: (str: string) => string } | undefined {
+		if (!this.topLabelText) return undefined;
+		return { text: this.topLabelText, colorFn: this.topLabelColorFn };
 	}
 
 	getAutocompleteMaxVisible(): number {
@@ -434,7 +466,7 @@ export class Editor implements Component, Focusable {
 		const leftPadding = " ".repeat(paddingX);
 		const rightPadding = leftPadding;
 
-		// Render top border (with scroll indicator if scrolled down)
+		// Render top border (with scroll indicator if scrolled down, or top label)
 		if (this.scrollOffset > 0) {
 			const indicator = `─── ↑ ${this.scrollOffset} more `;
 			const remaining = width - visibleWidth(indicator);
@@ -442,6 +474,17 @@ export class Editor implements Component, Focusable {
 				result.push(this.borderColor(indicator + "─".repeat(remaining)));
 			} else {
 				result.push(this.borderColor(truncateToWidth(indicator, width)));
+			}
+		} else if (this.topLabelText) {
+			const colorFn = this.topLabelColorFn ?? this.borderColor;
+			const labelContent = ` ${this.topLabelText} `;
+			const styledLabel = colorFn(labelContent);
+			const labelWidth = visibleWidth(labelContent);
+			const remaining = width - labelWidth;
+			if (remaining >= 0) {
+				result.push(styledLabel + this.borderColor("─".repeat(remaining)));
+			} else {
+				result.push(truncateToWidth(styledLabel, width));
 			}
 		} else {
 			result.push(horizontal.repeat(width));
@@ -493,14 +536,27 @@ export class Editor implements Component, Focusable {
 			result.push(`${leftPadding}${displayText}${padding}${lineRightPadding}`);
 		}
 
-		// Render bottom border (with scroll indicator if more content below)
+		// Render bottom border (with scroll indicator and/or badge)
 		const linesBelow = layoutLines.length - (this.scrollOffset + visibleLines.length);
+		const badgeSuffix = this.badgeText
+			? (() => {
+					const colorFn = this.badgeColorFn ?? this.borderColor;
+					const styled = colorFn(` ${this.badgeText} `);
+					const raw = ` ${this.badgeText} `;
+					return { styled, rawWidth: visibleWidth(raw) };
+				})()
+			: undefined;
+		const badgeWidth = badgeSuffix?.rawWidth ?? 0;
+
 		if (linesBelow > 0) {
 			const indicator = `─── ↓ ${linesBelow} more `;
-			const remaining = width - visibleWidth(indicator);
-			result.push(this.borderColor(indicator + "─".repeat(Math.max(0, remaining))));
+			const remaining = width - visibleWidth(indicator) - badgeWidth;
+			const line = this.borderColor(indicator + "─".repeat(Math.max(0, remaining)));
+			result.push(badgeSuffix ? line + badgeSuffix.styled : line);
 		} else {
-			result.push(horizontal.repeat(width));
+			const remaining = width - badgeWidth;
+			const line = horizontal.repeat(Math.max(0, remaining));
+			result.push(badgeSuffix ? line + badgeSuffix.styled : line);
 		}
 
 		// Add autocomplete list if active

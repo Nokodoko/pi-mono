@@ -71,4 +71,16 @@ export interface EditorComponent extends Component {
 
 	/** Set max visible items in autocomplete dropdown */
 	setAutocompleteMaxVisible?(maxVisible: number): void;
+
+	/** Set a badge label displayed on the bottom-right of the editor border */
+	setBadge?(text: string | undefined, colorFn?: (str: string) => string): void;
+
+	/** Get the current badge text and color function */
+	getBadge?(): { text: string; colorFn?: (str: string) => string } | undefined;
+
+	/** Set a label displayed on the left side of the top editor border (e.g. session name) */
+	setTopLabel?(text: string | undefined, colorFn?: (str: string) => string): void;
+
+	/** Get the current top label text and color function */
+	getTopLabel?(): { text: string; colorFn?: (str: string) => string } | undefined;
 }

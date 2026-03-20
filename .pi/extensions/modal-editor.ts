@@ -75,6 +75,16 @@ class ModalEditor extends CustomEditor {
 	private statusMessage: string = "";
 	private statusTimeout: ReturnType<typeof setTimeout> | null = null;
 
+	// Badge state (mirrors parent, needed because getBadge may not resolve across jiti boundaries)
+	private _badgeText: string | undefined = undefined;
+	private _badgeColorFn: ((str: string) => string) | undefined = undefined;
+
+	override setBadge(text: string | undefined, colorFn?: (str: string) => string): void {
+		this._badgeText = text;
+		this._badgeColorFn = colorFn;
+		super.setBadge(text, colorFn);
+	}
+
 	// Command-line mode state
 	private cmdBuffer: string = "";
 	private cmdCursor: number = 0;
@@ -1110,12 +1120,21 @@ class ModalEditor extends CustomEditor {
 		const lastLine = lines[last]!;
 		const lastWidth = visibleWidth(lastLine);
 
-		// Compose: [mode] ─── [status] [pos]
-		const totalLabelWidth = visibleWidth(modeLabel) + visibleWidth(rightLabel) + visibleWidth(posLabel);
+		// Badge (session name)
+		let badgePart = "";
+		let badgeWidth = 0;
+		if (this._badgeText) {
+			const colorFn = this._badgeColorFn ?? ((s: string) => s);
+			badgePart = colorFn(` ${this._badgeText} `);
+			badgeWidth = visibleWidth(` ${this._badgeText} `);
+		}
+
+		// Compose: [mode] ─── [status] [badge] [pos]
+		const totalLabelWidth = visibleWidth(modeLabel) + visibleWidth(rightLabel) + badgeWidth + visibleWidth(posLabel);
 		if (lastWidth >= totalLabelWidth) {
 			const fill = width - totalLabelWidth;
 			if (fill >= 0) {
-				lines[last] = modeLabel + "─".repeat(fill) + rightLabel + posLabel;
+				lines[last] = modeLabel + "─".repeat(fill) + rightLabel + badgePart + posLabel;
 			}
 		}
 
