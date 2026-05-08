@@ -143,11 +143,17 @@ export class FooterComponent implements Component {
 		// Add model name on the right side, plus thinking level if model supports it
 		const modelName = state.model?.id || "no-model";
 
+		// Cap the gauge/stats line to a sensible maximum so it doesn't span the
+		// entire terminal pane on wide displays. The pwd line and extension
+		// statuses still use the full terminal width.
+		const STATS_LINE_MAX_WIDTH = 100;
+		const statsWidth = Math.min(width, STATS_LINE_MAX_WIDTH);
+
 		let statsLeftWidth = visibleWidth(statsLeft);
 
 		// If statsLeft is too wide, truncate it
-		if (statsLeftWidth > width) {
-			statsLeft = truncateToWidth(statsLeft, width, "...");
+		if (statsLeftWidth > statsWidth) {
+			statsLeft = truncateToWidth(statsLeft, statsWidth, "...");
 			statsLeftWidth = visibleWidth(statsLeft);
 		}
 
@@ -166,7 +172,7 @@ export class FooterComponent implements Component {
 		let rightSide = rightSideWithoutProvider;
 		if (this.footerData.getAvailableProviderCount() > 1 && state.model) {
 			rightSide = `(${state.model!.provider}) ${rightSideWithoutProvider}`;
-			if (statsLeftWidth + minPadding + visibleWidth(rightSide) > width) {
+			if (statsLeftWidth + minPadding + visibleWidth(rightSide) > statsWidth) {
 				// Too wide, fall back
 				rightSide = rightSideWithoutProvider;
 			}
@@ -176,17 +182,17 @@ export class FooterComponent implements Component {
 		const totalNeeded = statsLeftWidth + minPadding + rightSideWidth;
 
 		let statsLine: string;
-		if (totalNeeded <= width) {
-			// Both fit - add padding to right-align model
-			const padding = " ".repeat(width - statsLeftWidth - rightSideWidth);
+		if (totalNeeded <= statsWidth) {
+			// Both fit - add padding to right-align model within the capped width
+			const padding = " ".repeat(statsWidth - statsLeftWidth - rightSideWidth);
 			statsLine = statsLeft + padding + rightSide;
 		} else {
 			// Need to truncate right side
-			const availableForRight = width - statsLeftWidth - minPadding;
+			const availableForRight = statsWidth - statsLeftWidth - minPadding;
 			if (availableForRight > 0) {
 				const truncatedRight = truncateToWidth(rightSide, availableForRight, "");
 				const truncatedRightWidth = visibleWidth(truncatedRight);
-				const padding = " ".repeat(Math.max(0, width - statsLeftWidth - truncatedRightWidth));
+				const padding = " ".repeat(Math.max(0, statsWidth - statsLeftWidth - truncatedRightWidth));
 				statsLine = statsLeft + padding + truncatedRight;
 			} else {
 				// Not enough space for right side at all
