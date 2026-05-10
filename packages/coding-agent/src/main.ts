@@ -708,6 +708,9 @@ export async function main(args: string[], options?: MainOptions) {
 		}
 
 		printTimings();
+		if (session.model) {
+			console.log(chalk.dim(`Model: ${session.model.provider}/${session.model.id}`));
+		}
 		await interactiveMode.run();
 	} else {
 		printTimings();
