@@ -247,7 +247,7 @@ export default function obContextInjectExtension(pi: ExtensionAPI) {
 		});
 
 		if (ctx.hasUI) {
-			ctx.ui.setWidget("ob1-card", buildCard(results, workdir, cfg.hostName), { placement: "aboveEditor" });
+			ctx.ui.setWidget("ob1-card", buildCard(results, workdir, cfg.hostName), { placement: "belowFooter" });
 		}
 	});
 

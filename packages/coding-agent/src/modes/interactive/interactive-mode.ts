@@ -313,11 +313,13 @@ export class InteractiveMode {
 	private extensionEditor: ExtensionEditorComponent | undefined = undefined;
 	private extensionTerminalInputUnsubscribers = new Set<() => void>();
 
-	// Extension widgets (components rendered above/below the editor)
+	// Extension widgets (components rendered above/below the editor or below the footer)
 	private extensionWidgetsAbove = new Map<string, Component & { dispose?(): void }>();
 	private extensionWidgetsBelow = new Map<string, Component & { dispose?(): void }>();
+	private extensionWidgetsBelowFooter = new Map<string, Component & { dispose?(): void }>();
 	private widgetContainerAbove!: Container;
 	private widgetContainerBelow!: Container;
+	private widgetContainerBelowFooter!: Container;
 
 	// Custom footer from extension (undefined = use built-in footer)
 	private customFooter: (Component & { dispose?(): void }) | undefined = undefined;
@@ -365,6 +367,7 @@ export class InteractiveMode {
 		this.statusContainer = new Container();
 		this.widgetContainerAbove = new Container();
 		this.widgetContainerBelow = new Container();
+		this.widgetContainerBelowFooter = new Container();
 		this.keybindings = KeybindingsManager.create();
 		setKeybindings(this.keybindings);
 		const editorPaddingX = this.settingsManager.getEditorPaddingX();
@@ -641,6 +644,7 @@ export class InteractiveMode {
 		this.ui.addChild(this.editorContainer);
 		this.ui.addChild(this.widgetContainerBelow);
 		this.ui.addChild(this.footer);
+		this.ui.addChild(this.widgetContainerBelowFooter);
 		this.ui.setFocus(this.editor);
 
 		this.setupKeyHandlers();
@@ -1732,6 +1736,7 @@ export class InteractiveMode {
 
 		removeExisting(this.extensionWidgetsAbove);
 		removeExisting(this.extensionWidgetsBelow);
+		removeExisting(this.extensionWidgetsBelowFooter);
 
 		if (content === undefined) {
 			this.renderWidgets();
@@ -1755,7 +1760,12 @@ export class InteractiveMode {
 			component = content(this.ui, theme);
 		}
 
-		const targetMap = placement === "belowEditor" ? this.extensionWidgetsBelow : this.extensionWidgetsAbove;
+		const targetMap =
+			placement === "belowFooter"
+				? this.extensionWidgetsBelowFooter
+				: placement === "belowEditor"
+					? this.extensionWidgetsBelow
+					: this.extensionWidgetsAbove;
 		targetMap.set(key, component);
 		this.renderWidgets();
 	}
@@ -1767,8 +1777,12 @@ export class InteractiveMode {
 		for (const widget of this.extensionWidgetsBelow.values()) {
 			widget.dispose?.();
 		}
+		for (const widget of this.extensionWidgetsBelowFooter.values()) {
+			widget.dispose?.();
+		}
 		this.extensionWidgetsAbove.clear();
 		this.extensionWidgetsBelow.clear();
+		this.extensionWidgetsBelowFooter.clear();
 		this.renderWidgets();
 	}
 
@@ -1810,9 +1824,10 @@ export class InteractiveMode {
 	 * Render all extension widgets to the widget container.
 	 */
 	private renderWidgets(): void {
-		if (!this.widgetContainerAbove || !this.widgetContainerBelow) return;
+		if (!this.widgetContainerAbove || !this.widgetContainerBelow || !this.widgetContainerBelowFooter) return;
 		this.renderWidgetContainer(this.widgetContainerAbove, this.extensionWidgetsAbove, true, true);
 		this.renderWidgetContainer(this.widgetContainerBelow, this.extensionWidgetsBelow, false, false);
+		this.renderWidgetContainer(this.widgetContainerBelowFooter, this.extensionWidgetsBelowFooter, false, false);
 		this.ui.requestRender();
 	}
 
