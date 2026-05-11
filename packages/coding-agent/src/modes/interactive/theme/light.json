@@ -48,7 +48,7 @@
 		"mdCode": "teal",
 		"mdCodeBlock": "green",
 		"mdCodeBlockBorder": "mediumGray",
-		"mdQuote": "mediumGray",
+		"mdQuote": "yellow",
 		"mdQuoteBorder": "mediumGray",
 		"mdHr": "mediumGray",
 		"mdListBullet": "green",

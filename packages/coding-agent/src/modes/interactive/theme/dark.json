@@ -49,7 +49,7 @@
 		"mdCode": "accent",
 		"mdCodeBlock": "green",
 		"mdCodeBlockBorder": "gray",
-		"mdQuote": "gray",
+		"mdQuote": "yellow",
 		"mdQuoteBorder": "gray",
 		"mdHr": "gray",
 		"mdListBullet": "accent",
