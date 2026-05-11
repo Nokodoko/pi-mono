@@ -30,6 +30,9 @@ interface LayerResult {
 const DIM = "\x1b[2m";
 const BOLD = "\x1b[1m";
 const RESET = "\x1b[0m";
+const MAGENTA = "\x1b[35m";
+const GREEN = "\x1b[32m";
+const RED = "\x1b[31m";
 
 function timeOfDay(): string {
 	const h = new Date().getHours();
@@ -44,7 +47,12 @@ function truncate(s: string, max: number): string {
 	return s.slice(0, max - 1) + "…";
 }
 
-function buildCard(results: LayerResult[], workdir: string, hostName: string): string[] {
+function buildCard(
+	results: LayerResult[],
+	workdir: string,
+	hostName: string,
+	connected: boolean,
+): string[] {
 	const width = Math.min(Math.max((process.stdout.columns ?? 70), 40), 70);
 	const inner = width - 4;
 	const user = process.env.USER ?? "pi";
@@ -64,7 +72,8 @@ function buildCard(results: LayerResult[], workdir: string, hostName: string): s
 	const dashLeft = Math.floor(dashCount / 2);
 	const dashRight = dashCount - dashLeft;
 
-	const border = (s: string) => `${DIM}${s}${RESET}`;
+	// Magenta frame; bold title text inside.
+	const border = (s: string) => `${MAGENTA}${s}${RESET}`;
 	const padLine = (label: string, value: string): string => {
 		const content = `${BOLD}${label}${RESET} ${truncate(value, inner - label.length - 1)}`;
 		const visLen = label.length + 1 + Math.min(value.length, inner - label.length - 1);
@@ -72,8 +81,19 @@ function buildCard(results: LayerResult[], workdir: string, hostName: string): s
 		return `${border("│")} ${content}${" ".repeat(pad)} ${border("│")}`;
 	};
 
+	// Render a colored status line (no BOLD label, no truncation of escape codes).
+	// statusText is the visible text; colorCode is its ANSI color.
+	const statusLine = (statusText: string, colorCode: string): string => {
+		const visLen = statusText.length;
+		const pad = Math.max(0, inner - visLen);
+		return `${border("│")} ${colorCode}${statusText}${RESET}${" ".repeat(pad)} ${border("│")}`;
+	};
+
 	const lines: string[] = [
 		`${border("╭")}${border("─".repeat(dashLeft))}${BOLD}${titleText}${RESET}${border("─".repeat(dashRight))}${border("╮")}`,
+		connected
+			? statusLine("ob1 connected", GREEN)
+			: statusLine("ob1 disconnected", RED),
 		padLine("project:", project),
 	];
 
@@ -228,26 +248,36 @@ export default function obContextInjectExtension(pi: ExtensionAPI) {
 		const cfg = loadConfig(500);
 
 		const transport = await detectTransport(cfg);
-		if (transport.type === "none") return;
+		const connected = transport.type !== "none";
 
 		// Cache transport + host so before_agent_start can append a model-visible
-		// stanza without re-running detection every turn.
-		runtime = { transportType: transport.type, hostName: cfg.hostName };
+		// stanza without re-running detection every turn. Only cache when
+		// actually connected — disconnected sessions skip the protocol addendum.
+		if (connected) {
+			runtime = { transportType: transport.type, hostName: cfg.hostName };
+		}
 
 		const workdir = ctx.cwd;
-		const results = await fetchAllLayers(cfg, workdir);
-		const xml = assembleXML(results, transport.type, workdir);
+		const results = connected ? await fetchAllLayers(cfg, workdir) : [];
 
-		if (!xml) return;
+		if (connected) {
+			const xml = assembleXML(results, transport.type, workdir);
+			if (xml) {
+				pi.sendMessage({
+					customType: "openbrain-context",
+					content: xml,
+					display: false,
+				});
+			}
+		}
 
-		pi.sendMessage({
-			customType: "openbrain-context",
-			content: xml,
-			display: false,
-		});
-
+		// Always render the card so disconnected state is visible to the user.
 		if (ctx.hasUI) {
-			ctx.ui.setWidget("ob1-card", buildCard(results, workdir, cfg.hostName), { placement: "belowFooter" });
+			ctx.ui.setWidget(
+				"ob1-card",
+				buildCard(results, workdir, cfg.hostName, connected),
+				{ placement: "belowFooter" },
+			);
 		}
 	});
 
