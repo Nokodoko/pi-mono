@@ -2189,12 +2189,14 @@ export class DefaultPackageManager implements PackageManager {
 			projectOverrides.extensions,
 			projectBaseDir,
 		);
+		const projectPiSkills = collectAutoSkillEntries(projectDirs.skills, "pi");
+		const projectPiSkillNames = new Set(projectPiSkills.map((entry) => basename(dirname(entry))));
+		const projectAgentsSkills = projectAgentsSkillDirs.flatMap((dir) =>
+			collectAutoSkillEntries(dir, "agents").filter((entry) => !projectPiSkillNames.has(basename(dirname(entry)))),
+		);
 		addResources(
 			"skills",
-			[
-				...collectAutoSkillEntries(projectDirs.skills, "pi"),
-				...projectAgentsSkillDirs.flatMap((dir) => collectAutoSkillEntries(dir, "agents")),
-			],
+			[...projectPiSkills, ...projectAgentsSkills],
 			projectMetadata,
 			projectOverrides.skills,
 			projectBaseDir,
@@ -2221,13 +2223,12 @@ export class DefaultPackageManager implements PackageManager {
 			userOverrides.extensions,
 			globalBaseDir,
 		);
-		addResources(
-			"skills",
-			[...collectAutoSkillEntries(userDirs.skills, "pi"), ...collectAutoSkillEntries(userAgentsSkillsDir, "agents")],
-			userMetadata,
-			userOverrides.skills,
-			globalBaseDir,
+		const userPiSkills = collectAutoSkillEntries(userDirs.skills, "pi");
+		const userPiSkillNames = new Set(userPiSkills.map((entry) => basename(dirname(entry))));
+		const userAgentsSkills = collectAutoSkillEntries(userAgentsSkillsDir, "agents").filter(
+			(entry) => !userPiSkillNames.has(basename(dirname(entry))),
 		);
+		addResources("skills", [...userPiSkills, ...userAgentsSkills], userMetadata, userOverrides.skills, globalBaseDir);
 		addResources(
 			"prompts",
 			collectAutoPromptEntries(userDirs.prompts),
