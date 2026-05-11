@@ -10,12 +10,16 @@
 
 import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
 import { basename } from "node:path";
+import { execFile } from "node:child_process";
+import { promisify } from "node:util";
 import {
 	type OBConfig,
 	type ReadEntry,
+	type GraphSearchEntity,
 	loadConfig,
 	detectTransport,
 	obRead,
+	obGraphSearch,
 } from "./ob-client.js";
 
 // ---------------------------------------------------------------------------
@@ -30,8 +34,10 @@ interface LayerResult {
 const BOLD = "\x1b[1m";
 const RESET = "\x1b[0m";
 const MAGENTA = "\x1b[35m";
+const CYAN = "\x1b[36m";
 const GREEN = "\x1b[32m";
 const RED = "\x1b[31m";
+const DIM = "\x1b[2m";
 
 function timeOfDay(): string {
 	const h = new Date().getHours();
@@ -80,19 +86,20 @@ function buildCard(
 		return `${border("│")} ${content}${" ".repeat(pad)} ${border("│")}`;
 	};
 
-	// Render a colored status line (no BOLD label, no truncation of escape codes).
-	// statusText is the visible text; colorCode is its ANSI color.
-	const statusLine = (statusText: string, colorCode: string): string => {
-		const visLen = statusText.length;
+	// Render a status line where ONLY the state literal (connected/disconnected)
+	// is colored — mirrors the cc convention (sessionbanner.cardStateLabel,
+	// ob1tail.formatStatus, tgviz header). Visible width = label + 1 + token.
+	const statusLine = (label: string, token: string, colorCode: string): string => {
+		const visLen = label.length + 1 + token.length;
 		const pad = Math.max(0, inner - visLen);
-		return `${border("│")} ${colorCode}${statusText}${RESET}${" ".repeat(pad)} ${border("│")}`;
+		return `${border("│")} ${label} ${colorCode}${token}${RESET}${" ".repeat(pad)} ${border("│")}`;
 	};
 
 	const lines: string[] = [
 		`${border("╭")}${border("─".repeat(dashLeft))}${BOLD}${titleText}${RESET}${border("─".repeat(dashRight))}${border("╮")}`,
 		connected
-			? statusLine("ob1 connected", GREEN)
-			: statusLine("ob1 disconnected", RED),
+			? statusLine("ob1", "connected", GREEN)
+			: statusLine("ob1", "disconnected", RED),
 		padLine("project:", project),
 	];
 
@@ -102,6 +109,122 @@ function buildCard(
 
 	lines.push(`${border("╰")}${border("─".repeat(width - 2))}${border("╯")}`);
 	return lines;
+}
+
+// ---------------------------------------------------------------------------
+// TrustGraph viz card
+// ---------------------------------------------------------------------------
+
+const execFileAsync = promisify(execFile);
+
+const ANSI_RE = /\x1b\[[0-9;]*m/g;
+
+function visibleWidth(s: string): number {
+	return s.replace(ANSI_RE, "").length;
+}
+
+async function buildTgVizCard(width: number, hostName: string): Promise<string[]> {
+	const inner = width - 4;
+	const host = hostName.split(".")[0] ?? "local";
+	const border = (s: string) => `${CYAN}${s}${RESET}`;
+
+	const makeLine = (text: string): string => {
+		const pad = Math.max(0, inner - visibleWidth(text));
+		return `${border("│")} ${text}${" ".repeat(pad)} ${border("│")}`;
+	};
+
+	const makeHeader = (state: string): string => {
+		const titleText = ` tg · ${state} · ${host} `;
+		const dashCount = Math.max(0, width - 2 - visibleWidth(titleText));
+		const dashLeft = Math.floor(dashCount / 2);
+		const dashRight = dashCount - dashLeft;
+		return `${border("╭")}${border("─".repeat(dashLeft))}${BOLD}${titleText}${RESET}${border("─".repeat(dashRight))}${border("╮")}`;
+	};
+
+	const footer = `${border("╰")}${border("─".repeat(width - 2))}${border("╯")}`;
+
+	// Colored state tokens — mirrors the cc tgviz convention (only the literal
+	// connected/disconnected token is colored; the rest of the header is plain).
+	const connectedToken = `${GREEN}connected${RESET}`;
+	const disconnectedToken = `${RED}disconnected${RESET}`;
+
+	// Degraded box helper — same height as a 3-body-line success box (header + 3 + footer = 5).
+	const degradedBox = (reason: string): string[] => [
+		makeHeader(disconnectedToken),
+		makeLine(`${DIM}${reason}${RESET}`),
+		makeLine(""),
+		makeLine(""),
+		footer,
+	];
+
+	let stdout: string;
+	try {
+		const result = await execFileAsync("cmdr", ["tg-summary", "--no-color"], {
+			timeout: 5000,
+		});
+		stdout = result.stdout.trim();
+	} catch (err: unknown) {
+		const msg = err instanceof Error ? err.message : String(err);
+		if (msg.includes("ENOENT") || msg.includes("not found")) {
+			return degradedBox("cmdr not found");
+		}
+		return degradedBox("cmdr tg-summary error");
+	}
+
+	const rawLines = stdout.split("\n").filter(Boolean);
+	if (rawLines.length === 0) return degradedBox("no output");
+
+	const summary = rawLines[0] ?? "";
+	const bodyLines = rawLines.slice(1);
+
+	// State token in the header is colored (green=connected, red=disconnected).
+	// The richer cmdr summary (e.g. "110 nodes · 200 edges") moves to the first
+	// body line so the header stays parity-shaped with cc's tgviz pane.
+	const summaryTrimmed = summary.replace(/^TG\s*·\s*/, "");
+	const isDisconnected = summaryTrimmed.toLowerCase().includes("disconnected");
+	const stateToken = isDisconnected ? disconnectedToken : connectedToken;
+
+	const lines: string[] = [makeHeader(stateToken)];
+	if (!isDisconnected && summaryTrimmed.length > 0) {
+		lines.push(makeLine(truncate(summaryTrimmed, inner)));
+	}
+	for (const line of bodyLines) {
+		lines.push(makeLine(truncate(line, inner)));
+	}
+	// Pad to consistent height (3 body lines) for layout stability.
+	while (lines.length < 4) lines.push(makeLine(""));
+	lines.push(footer);
+	return lines;
+}
+
+// ---------------------------------------------------------------------------
+// Horizontal card join
+// ---------------------------------------------------------------------------
+
+/**
+ * Join two string[] card frames side-by-side with a single space separator.
+ * Both frames are padded to equal height by inserting empty interior lines
+ * (before the bottom border) in the shorter one.
+ */
+function joinCardsHorizontal(left: string[], right: string[]): string[] {
+	// Pad a card to targetLen by inserting blank interior lines before the last line.
+	const padCard = (card: string[], targetLen: number): string[] => {
+		if (card.length >= targetLen) return card;
+		const top = card.slice(0, -1);
+		const bottom = card[card.length - 1] ?? "";
+		// Determine interior width from the first body line (index 1).
+		const sampleLine = card[1] ?? card[0] ?? "";
+		const fullWidth = visibleWidth(sampleLine);
+		const blankLine = " ".repeat(fullWidth);
+		const blanks = Array(targetLen - card.length).fill(blankLine);
+		return [...top, ...blanks, bottom];
+	};
+
+	const maxLen = Math.max(left.length, right.length);
+	const paddedLeft = padCard(left, maxLen);
+	const paddedRight = padCard(right, maxLen);
+
+	return paddedLeft.map((line, i) => `${line} ${paddedRight[i] ?? ""}`);
 }
 
 // ---------------------------------------------------------------------------
@@ -218,6 +341,55 @@ function assembleXML(
 }
 
 // ---------------------------------------------------------------------------
+// Graph context
+// ---------------------------------------------------------------------------
+
+// Maximum number of graph entities to include in the block.
+const GRAPH_ENTITY_LIMIT = 5;
+// Maximum character length per entity text before truncation.
+const GRAPH_ENTITY_MAX_CHARS = 200;
+// Budget for graph search: must return before this deadline or be omitted.
+const GRAPH_SEARCH_TIMEOUT_MS = 2000;
+
+/**
+ * Assemble a <graph-context> XML block from obGraphSearch results.
+ * Returns an empty string if no usable entities are found or TG times out.
+ */
+async function buildGraphContextBlock(cfg: OBConfig, query: string): Promise<string> {
+	// Apply a hard 2-second deadline so TG latency never blocks SessionStart.
+	const raceTimeout = new Promise<null>((resolve) =>
+		setTimeout(() => resolve(null), GRAPH_SEARCH_TIMEOUT_MS),
+	);
+
+	let entities: GraphSearchEntity[] = [];
+	try {
+		const result = await Promise.race([
+			obGraphSearch(cfg, query, { limit: GRAPH_ENTITY_LIMIT }),
+			raceTimeout,
+		]);
+		if (!result || !result.ok || !result.data) return "";
+		entities = result.data.entities;
+	} catch {
+		// Silent skip — TG must never block SessionStart.
+		return "";
+	}
+
+	if (entities.length === 0) return "";
+
+	const now = new Date().toISOString();
+	const lines: string[] = [];
+	lines.push(`\n<graph-context fetched="${now}" source="trustgraph">`);
+
+	for (const ent of entities.slice(0, GRAPH_ENTITY_LIMIT)) {
+		const text = truncate(`[${ent.entity_type}] ${ent.entity}`, GRAPH_ENTITY_MAX_CHARS);
+		lines.push(`  <entry>${text}</entry>`);
+	}
+
+	lines.push("</graph-context>\n");
+	return lines.join("\n");
+}
+
+// ---------------------------------------------------------------------------
 // Extension
 // ---------------------------------------------------------------------------
 
@@ -226,6 +398,12 @@ function assembleXML(
 interface Ob1RuntimeState {
 	transportType: string;
 	hostName: string;
+	// Cached <openbrain-context>+<graph-context> block assembled at session_start.
+	// Injected into the model's view via the system prompt on the FIRST
+	// before_agent_start of the session, then cleared so subsequent turns only
+	// get the protocol stanza (data stays in conversation context after turn 1).
+	contextBlock: string;
+	contextBlockConsumed: boolean;
 }
 
 function buildOb1SystemAddendum(state: Ob1RuntimeState): string {
@@ -249,41 +427,55 @@ export default function obContextInjectExtension(pi: ExtensionAPI) {
 		const transport = await detectTransport(cfg);
 		const connected = transport.type !== "none";
 
-		// Cache transport + host so before_agent_start can append a model-visible
-		// stanza without re-running detection every turn. Only cache when
-		// actually connected — disconnected sessions skip the protocol addendum.
-		if (connected) {
-			runtime = { transportType: transport.type, hostName: cfg.hostName };
-		}
-
 		const workdir = ctx.cwd;
-		const results = connected ? await fetchAllLayers(cfg, workdir) : [];
 
+		// Fetch OB layers and TrustGraph context in parallel. The graph search
+		// uses the project name as its seed query (it runs concurrently with the
+		// layer fetches, so richer session metadata is not yet available). If the
+		// graph search exceeds its internal 2-second deadline it returns "" and
+		// the SessionStart block ships without it.
+		const [results, graphBlock, tgCard] = await Promise.all([
+			connected ? fetchAllLayers(cfg, workdir) : Promise.resolve([] as LayerResult[]),
+			connected
+				? buildGraphContextBlock(cfg, basename(workdir)).catch(() => "")
+				: Promise.resolve(""),
+			ctx.hasUI ? buildTgVizCard(62, cfg.hostName) : Promise.resolve([] as string[]),
+		]);
+
+		// Cache transport + host + the assembled context block so before_agent_start
+		// can prepend a model-visible block on turn 1 (same path the protocol
+		// stanza already uses). This replaces the prior pi.sendMessage approach,
+		// which races against the first model turn and depended on custom→user
+		// role conversion happening before the LLM call assembled history.
 		if (connected) {
 			const xml = assembleXML(results, transport.type, workdir);
-			if (xml) {
-				pi.sendMessage({
-					customType: "openbrain-context",
-					content: xml,
-					display: false,
-				});
-			}
+			const fullBlock = (xml || graphBlock) ? (xml ?? "") + graphBlock : "";
+			runtime = {
+				transportType: transport.type,
+				hostName: cfg.hostName,
+				contextBlock: fullBlock,
+				contextBlockConsumed: false,
+			};
 		}
 
-		// Always render the card so disconnected state is visible to the user.
+		// Always render the dual card so disconnected state is visible to the user.
 		if (ctx.hasUI) {
-			ctx.ui.setWidget(
-				"ob1-card",
-				buildCard(results, workdir, cfg.hostName, connected),
-				{ placement: "belowFooter" },
-			);
+			const obCard = buildCard(results, workdir, cfg.hostName, connected);
+			const joined = joinCardsHorizontal(obCard, tgCard);
+			ctx.ui.setWidget("ob1-card", joined, { placement: "belowFooter" });
 		}
 	});
 
-	// Append an ob1 protocol stanza to the assembled system prompt each turn so
-	// the model itself sees ob1 awareness, not just the UI/custom-message layer.
+	// Append the ob1 context block (turn 1) and the protocol stanza (every turn)
+	// to the assembled system prompt so the model sees ob1 awareness AND the
+	// fetched data, not just the UI/custom-message layer.
 	pi.on("before_agent_start", async (event) => {
 		if (!runtime) return undefined;
-		return { systemPrompt: event.systemPrompt + buildOb1SystemAddendum(runtime) };
+		let systemPrompt = event.systemPrompt + buildOb1SystemAddendum(runtime);
+		if (!runtime.contextBlockConsumed && runtime.contextBlock) {
+			systemPrompt = systemPrompt + "\n" + runtime.contextBlock;
+			runtime.contextBlockConsumed = true;
+		}
+		return { systemPrompt };
 	});
 }
