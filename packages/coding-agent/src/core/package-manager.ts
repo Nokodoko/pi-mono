@@ -2189,10 +2189,21 @@ export class DefaultPackageManager implements PackageManager {
 			projectOverrides.extensions,
 			projectBaseDir,
 		);
+		// T-fix-skill-collisions-agents-shadow: pre-filter agents-mode skills whose folder
+		// name already appears in EITHER project-pi or user-pi collections. This silences
+		// the [Skill conflicts] warning for ~/.agents/skills/<name>/SKILL.md shadowed by
+		// any ~/.pi/skills/<name>/SKILL.md (project or user scope). The user-pi names are
+		// computed up front so both project-agents and user-agents passes can use them;
+		// otherwise a project-pi skill (e.g. cwd=$HOME makes ~/.pi/skills project-scoped)
+		// would not shadow the same-named user-agents skill. See commit 4d1d8d4d for the
+		// original within-scope fix; this is the cross-scope extension.
 		const projectPiSkills = collectAutoSkillEntries(projectDirs.skills, "pi");
 		const projectPiSkillNames = new Set(projectPiSkills.map((entry) => basename(dirname(entry))));
+		const userPiSkillsForFilter = collectAutoSkillEntries(userDirs.skills, "pi");
+		const userPiSkillNamesForFilter = new Set(userPiSkillsForFilter.map((entry) => basename(dirname(entry))));
+		const piSkillNamesUnion = new Set<string>([...projectPiSkillNames, ...userPiSkillNamesForFilter]);
 		const projectAgentsSkills = projectAgentsSkillDirs.flatMap((dir) =>
-			collectAutoSkillEntries(dir, "agents").filter((entry) => !projectPiSkillNames.has(basename(dirname(entry)))),
+			collectAutoSkillEntries(dir, "agents").filter((entry) => !piSkillNamesUnion.has(basename(dirname(entry)))),
 		);
 		addResources(
 			"skills",
@@ -2223,10 +2234,12 @@ export class DefaultPackageManager implements PackageManager {
 			userOverrides.extensions,
 			globalBaseDir,
 		);
-		const userPiSkills = collectAutoSkillEntries(userDirs.skills, "pi");
-		const userPiSkillNames = new Set(userPiSkills.map((entry) => basename(dirname(entry))));
+		// Reuse the upstream-computed user-pi entries (see project-skills block above) so the
+		// filter sees BOTH project-pi and user-pi names. Without the union, ~/.agents/skills/X
+		// is not shadowed by ~/.pi/skills/X when ~/.pi/skills is project-scoped (cwd=$HOME).
+		const userPiSkills = userPiSkillsForFilter;
 		const userAgentsSkills = collectAutoSkillEntries(userAgentsSkillsDir, "agents").filter(
-			(entry) => !userPiSkillNames.has(basename(dirname(entry))),
+			(entry) => !piSkillNamesUnion.has(basename(dirname(entry))),
 		);
 		addResources("skills", [...userPiSkills, ...userAgentsSkills], userMetadata, userOverrides.skills, globalBaseDir);
 		addResources(
