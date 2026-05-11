@@ -197,13 +197,19 @@ export async function obWrite(cfg: OBConfig, wr: WriteRequest): Promise<boolean>
 		clearTimeout(timer);
 		const ok = Math.floor(resp.status / 100) === 2;
 		if (ok) {
-			piDunst("pi-ob1 write", `${wr.item_type}: ${truncate(firstLine(wr.raw_content), 80)}`, "normal");
+			// Title + body schema mirrors openbrain transport.Notify ob-write call sites.
+			// Origin marker "pi" is in the body; the ob1 record itself carries source:pi.
+			piDunst(
+				"OB1 Write",
+				`${wr.item_type} | pi | ${truncate(firstLine(wr.raw_content), 80)}`,
+				"low",
+			);
 		} else {
-			piDunst("pi-ob1 write FAILED", `${wr.item_type} → HTTP ${resp.status}`, "critical");
+			piDunst("OB1 Write FAILED", `${wr.item_type} | pi | HTTP ${resp.status}`, "critical");
 		}
 		return ok;
 	} catch (err) {
-		piDunst("pi-ob1 write FAILED", String(err).slice(0, 80), "critical");
+		piDunst("OB1 Write FAILED", `pi | ${String(err).slice(0, 80)}`, "critical");
 		return false;
 	}
 }
@@ -620,22 +626,53 @@ export async function obTriples(cfg: OBConfig, opts: TriplesOpts = {}): Promise<
 // Notifications
 // ---------------------------------------------------------------------------
 
-const PI_DUNST_ICON = "/home/n0ko/Pictures/neonIcons/goldArcRune.png";
+/**
+ * Default icon — mirrors openbrain transport.Notify (brain-dunst per CLAUDE.md
+ * notification convention). Override at runtime with OB_NOTIFY_ICON.
+ * Source of truth: /home/n0ko/openbrain/hooks/go/internal/hooklib/transport/notify.go
+ */
+const PI_DUNST_ICON_DEFAULT = "/home/n0ko/.local/share/icons/brain-dunst.png";
 
 /** Module-level counter for throttling obRead success notifications. */
 let obReadSuccessCount = 0;
 const OB_READ_NOTIFY_EVERY = 10;
 
 /**
- * Fire a desktop notification via notify-send, gated by OB_PI_NOTIFY env var.
- * OB_PI_NOTIFY defaults to ON; set OB_PI_NOTIFY=0 to disable.
+ * Fire a desktop notification mirroring openbrain transport.Notify chrome
+ * (app-name=ob-write, brain-dunst icon, low urgency, 2s timeout, replace-id
+ * 99501, cyan-on-dark hints). Prefers dunstify, falls back to notify-send.
+ * Origin (pi vs claude) is encoded in the body text and the ob1 record's
+ * source:pi tag — the desktop chrome stays identical so the user sees one
+ * unified "OB1 Write" stream.
+ *
+ * Gated by OB_PI_NOTIFY env var (defaults ON; OB_PI_NOTIFY=0 disables).
+ * Icon override via OB_NOTIFY_ICON env var.
  */
 function piDunst(title: string, body: string, urgency: "low" | "normal" | "critical"): void {
 	if (env.OB_PI_NOTIFY === "0") return;
+	const icon = env.OB_NOTIFY_ICON || PI_DUNST_ICON_DEFAULT;
+	// Critical paths keep their own urgency/timeout; success paths use the
+	// canonical low/2000ms to match openbrain exactly.
+	const timeout = urgency === "critical" ? "5000" : "2000";
+	const dunstifyArgs = [
+		"-a", "ob-write",
+		"-u", urgency,
+		"-t", timeout,
+		"-i", icon,
+		"-r", "99501",
+		"-h", "string:fgcolor:#00D7FF",
+		"-h", "string:bgcolor:#0a0a1a",
+		title,
+		body,
+	];
+	const r = spawnSync("dunstify", dunstifyArgs);
+	if (r.status === 0) return;
+	// Fallback: notify-send with the same chrome.
 	spawnSync("notify-send", [
-		"--app-name=pi-ob1",
-		`--icon=${PI_DUNST_ICON}`,
-		`--urgency=${urgency}`,
+		"-a", "ob-write",
+		"-u", urgency,
+		"-t", timeout,
+		"-i", icon,
 		title,
 		body,
 	]);
